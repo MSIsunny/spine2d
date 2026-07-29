@@ -2099,6 +2099,47 @@ fn bone_y_down_switch_controls_skeleton_scale_y() {
 }
 
 #[test]
+fn no_scale_inheritance_stays_finite_when_parent_scale_is_zero() {
+    for inherit in [Inherit::NoScale, Inherit::NoScaleOrReflection] {
+        let mut data = Arc::unwrap_or_clone(empty_skeleton_data());
+        data.bones = vec![
+            BoneData {
+                index: 0,
+                name: "root".to_string(),
+                scale_x: 0.0,
+                scale_y: 0.0,
+                ..Default::default()
+            },
+            BoneData {
+                index: 1,
+                name: "child".to_string(),
+                parent: Some(0),
+                inherit,
+                ..Default::default()
+            },
+        ];
+
+        let mut skeleton = Skeleton::new(Arc::new(data));
+        skeleton.update_world_transform_with_physics(crate::Physics::None);
+
+        let child = &skeleton.get_bones()[1];
+        let world_transform = [
+            child.get_a(),
+            child.get_b(),
+            child.get_c(),
+            child.get_d(),
+            child.get_world_x(),
+            child.get_world_y(),
+        ];
+        assert!(
+            world_transform.into_iter().all(f32::is_finite),
+            "{inherit:?} produced {world_transform:?}"
+        );
+        assert_eq!(&world_transform[..4], &[0.0; 4]);
+    }
+}
+
+#[test]
 fn bone_parent_and_children_expose_skeleton_hierarchy() {
     let skeleton = Skeleton::new(named_attachment_skeleton_data());
 

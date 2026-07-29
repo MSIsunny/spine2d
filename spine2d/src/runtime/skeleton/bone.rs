@@ -524,7 +524,10 @@ pub(super) fn update_world_transform_child(
 
             let za = (pa * cos + pb * sin) / skeleton_scale_x;
             let zc = (pc * cos + pd * sin) / skeleton_scale_y;
-            let s = 1.0 / sqrt_f32(za * za + zc * zc);
+            let length = sqrt_f32(za * za + zc * zc);
+            // A zero-scaled parent collapses this basis; keep it collapsed instead of
+            // normalizing zero into NaN.
+            let s = if length > 1.0e-5 { 1.0 / length } else { 0.0 };
             let za = za * s;
             let zc = zc * s;
 
