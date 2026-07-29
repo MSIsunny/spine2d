@@ -67,6 +67,42 @@ impl DrawList {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct AttachmentDraw<'a> {
+    pub slot_index: usize,
+    pub attachment_name: &'a str,
+    pub attachment_path: &'a str,
+    pub texture_path: &'a str,
+    pub blend: BlendMode,
+    pub premultiplied_alpha: bool,
+    pub vertices: &'a [Vertex],
+    pub indices: &'a [u32],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AttachmentDrawScratch {
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
+}
+
+impl AttachmentDrawScratch {
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.indices.clear();
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct AttachmentDrawOptions {
+    pub clipping: bool,
+}
+
+impl Default for AttachmentDrawOptions {
+    fn default() -> Self {
+        Self { clipping: true }
+    }
+}
+
 pub fn build_draw_list(skeleton: &Skeleton) -> DrawList {
     let mut out = DrawList::default();
     append_draw_list(&mut out, skeleton);
@@ -74,20 +110,75 @@ pub fn build_draw_list(skeleton: &Skeleton) -> DrawList {
 }
 
 pub fn append_draw_list(out: &mut DrawList, skeleton: &Skeleton) {
-    append_draw_list_internal(out, skeleton, None);
+    let mut scratch = AttachmentDrawScratch::default();
+    visit_attachment_draws(skeleton, &mut scratch, |draw| {
+        append_indexed(
+            out,
+            draw.texture_path,
+            draw.blend,
+            draw.premultiplied_alpha,
+            draw.vertices,
+            draw.indices,
+        );
+    });
 }
 
 pub fn build_draw_list_with_atlas(skeleton: &Skeleton, atlas: &Atlas) -> DrawList {
     let mut out = DrawList::default();
-    append_draw_list_internal(&mut out, skeleton, Some(atlas));
+    append_draw_list_with_atlas(&mut out, skeleton, atlas);
     out
 }
 
 pub fn append_draw_list_with_atlas(out: &mut DrawList, skeleton: &Skeleton, atlas: &Atlas) {
-    append_draw_list_internal(out, skeleton, Some(atlas));
+    let mut scratch = AttachmentDrawScratch::default();
+    visit_attachment_draws_with_atlas(skeleton, atlas, &mut scratch, |draw| {
+        append_indexed(
+            out,
+            draw.texture_path,
+            draw.blend,
+            draw.premultiplied_alpha,
+            draw.vertices,
+            draw.indices,
+        );
+    });
 }
 
-fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Option<&Atlas>) {
+pub fn visit_attachment_draws(
+    skeleton: &Skeleton,
+    scratch: &mut AttachmentDrawScratch,
+    visitor: impl FnMut(AttachmentDraw<'_>),
+) {
+    visit_attachment_draws_with_options(
+        skeleton,
+        None,
+        AttachmentDrawOptions::default(),
+        scratch,
+        visitor,
+    );
+}
+
+pub fn visit_attachment_draws_with_atlas(
+    skeleton: &Skeleton,
+    atlas: &Atlas,
+    scratch: &mut AttachmentDrawScratch,
+    visitor: impl FnMut(AttachmentDraw<'_>),
+) {
+    visit_attachment_draws_with_options(
+        skeleton,
+        Some(atlas),
+        AttachmentDrawOptions::default(),
+        scratch,
+        visitor,
+    );
+}
+
+pub fn visit_attachment_draws_with_options(
+    skeleton: &Skeleton,
+    atlas: Option<&Atlas>,
+    options: AttachmentDrawOptions,
+    scratch: &mut AttachmentDrawScratch,
+    mut visitor: impl FnMut(AttachmentDraw<'_>),
+) {
     let mut clipper = SkeletonClipper::default();
     let mut clip_end_slot: Option<usize> = None;
 
@@ -104,6 +195,9 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
             let Some(attachment) = slot.get_applied_attachment(skeleton) else {
                 break 'process_slot;
             };
+            let attachment_name = slot
+                .get_applied_attachment_name()
+                .unwrap_or_else(|| attachment.get_name());
 
             match attachment {
                 AttachmentData::Region(region) => {
@@ -195,7 +289,8 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
                     let dark_color = slot_dark_color_rgba(slot, premultiplied_alpha, light_alpha);
 
                     if !clipper.is_clipping() {
-                        let vertices = vec![
+                        scratch.clear();
+                        scratch.vertices.extend([
                             Vertex {
                                 position: [world[0].0, world[0].1],
                                 uv: uvs[0],
@@ -220,15 +315,18 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
                                 color,
                                 dark_color,
                             },
-                        ];
-                        append_indexed(
-                            out,
-                            &texture_path,
+                        ]);
+                        scratch.indices.extend([0_u32, 1, 2, 2, 3, 0]);
+                        visitor(AttachmentDraw {
+                            slot_index,
+                            attachment_name,
+                            attachment_path: attachment_path.as_ref(),
+                            texture_path: &texture_path,
                             blend,
                             premultiplied_alpha,
-                            vertices,
-                            &[0_u32, 1, 2, 2, 3, 0],
-                        );
+                            vertices: &scratch.vertices,
+                            indices: &scratch.indices,
+                        });
                     } else {
                         let positions: [f32; 8] = [
                             world[0].0, world[0].1, world[1].0, world[1].1, world[2].0, world[2].1,
@@ -247,30 +345,35 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
                             break 'process_slot;
                         }
 
-                        let mut clipped_vertices: Vec<Vertex> =
-                            Vec::with_capacity(clipped_pos.len() / 2);
+                        scratch.clear();
+                        scratch.vertices.reserve(clipped_pos.len() / 2);
                         for i in 0..(clipped_pos.len() / 2) {
-                            clipped_vertices.push(Vertex {
+                            scratch.vertices.push(Vertex {
                                 position: [clipped_pos[i * 2], clipped_pos[i * 2 + 1]],
                                 uv: [clipped_uv[i * 2], clipped_uv[i * 2 + 1]],
                                 color,
                                 dark_color,
                             });
                         }
-
-                        append_indexed_u16(
-                            out,
-                            &texture_path,
+                        scratch
+                            .indices
+                            .extend(clipped_idx.iter().map(|&index| u32::from(index)));
+                        visitor(AttachmentDraw {
+                            slot_index,
+                            attachment_name,
+                            attachment_path: attachment_path.as_ref(),
+                            texture_path: &texture_path,
                             blend,
                             premultiplied_alpha,
-                            clipped_vertices,
-                            &clipped_idx,
-                        );
+                            vertices: &scratch.vertices,
+                            indices: &scratch.indices,
+                        });
                     }
                 }
                 AttachmentData::Point(_) => {}
                 AttachmentData::Path(_) => {}
                 AttachmentData::BoundingBox(_) => {}
+                AttachmentData::Clipping(_) if !options.clipping => {}
                 AttachmentData::Clipping(clip) => {
                     if clipper.is_clipping() {
                         call_clip_end_for_slot = false;
@@ -413,29 +516,32 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
                     };
 
                     if !clipper.is_clipping() {
-                        let mut vertices = Vec::with_capacity(world_positions.len());
+                        scratch.clear();
+                        scratch.vertices.reserve(world_positions.len());
                         for (i, pos) in world_positions.iter().enumerate() {
                             let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
                             let uv = atlas_region_and_page
                                 .map(|(r, p)| map_mesh_uv_to_page(uv, r, p))
                                 .unwrap_or(uv);
 
-                            vertices.push(Vertex {
+                            scratch.vertices.push(Vertex {
                                 position: [pos[0], pos[1]],
                                 uv,
                                 color,
                                 dark_color,
                             });
                         }
-
-                        append_indexed(
-                            out,
-                            &texture_path,
+                        scratch.indices.extend(mesh.triangles.iter().copied());
+                        visitor(AttachmentDraw {
+                            slot_index,
+                            attachment_name,
+                            attachment_path: attachment_path.as_ref(),
+                            texture_path: &texture_path,
                             blend,
                             premultiplied_alpha,
-                            vertices,
-                            &mesh.triangles,
-                        );
+                            vertices: &scratch.vertices,
+                            indices: &scratch.indices,
+                        });
                     } else {
                         let mut positions: Vec<f32> = Vec::with_capacity(world_positions.len() * 2);
                         let mut uvs_flat: Vec<f32> = Vec::with_capacity(world_positions.len() * 2);
@@ -467,25 +573,29 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
                             break 'process_slot;
                         }
 
-                        let mut clipped_vertices: Vec<Vertex> =
-                            Vec::with_capacity(clipped_pos.len() / 2);
+                        scratch.clear();
+                        scratch.vertices.reserve(clipped_pos.len() / 2);
                         for i in 0..(clipped_pos.len() / 2) {
-                            clipped_vertices.push(Vertex {
+                            scratch.vertices.push(Vertex {
                                 position: [clipped_pos[i * 2], clipped_pos[i * 2 + 1]],
                                 uv: [clipped_uv[i * 2], clipped_uv[i * 2 + 1]],
                                 color,
                                 dark_color,
                             });
                         }
-
-                        append_indexed_u16(
-                            out,
-                            &texture_path,
+                        scratch
+                            .indices
+                            .extend(clipped_idx.iter().map(|&index| u32::from(index)));
+                        visitor(AttachmentDraw {
+                            slot_index,
+                            attachment_name,
+                            attachment_path: attachment_path.as_ref(),
+                            texture_path: &texture_path,
                             blend,
                             premultiplied_alpha,
-                            clipped_vertices,
-                            &clipped_idx,
-                        );
+                            vertices: &scratch.vertices,
+                            indices: &scratch.indices,
+                        });
                     }
                 }
             }
@@ -500,39 +610,21 @@ fn append_draw_list_internal(out: &mut DrawList, skeleton: &Skeleton, atlas: Opt
     clipper.clip_end();
 }
 
-fn append_indexed_u16(
-    out: &mut DrawList,
-    texture_path: &str,
-    blend: BlendMode,
-    premultiplied_alpha: bool,
-    vertices: Vec<Vertex>,
-    indices: &[u16],
-) {
-    let indices = indices.iter().map(|&idx| idx as u32).collect::<Vec<_>>();
-    append_indexed(
-        out,
-        texture_path,
-        blend,
-        premultiplied_alpha,
-        vertices,
-        &indices,
-    );
-}
-
 fn append_indexed(
     out: &mut DrawList,
     texture_path: &str,
     blend: BlendMode,
     premultiplied_alpha: bool,
-    vertices: Vec<Vertex>,
+    vertices: impl AsRef<[Vertex]>,
     indices: &[u32],
 ) {
+    let vertices = vertices.as_ref();
     if vertices.is_empty() || indices.is_empty() {
         return;
     }
 
     let base = out.vertices.len() as u32;
-    out.vertices.extend(vertices);
+    out.vertices.extend_from_slice(vertices);
 
     let first_index = out.indices.len();
     out.indices.extend(indices.iter().map(|&idx| base + idx));

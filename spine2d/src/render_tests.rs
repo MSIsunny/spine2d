@@ -1,4 +1,7 @@
-use crate::{Atlas, SkeletonData, build_draw_list, build_draw_list_with_atlas};
+use crate::{
+    Atlas, AttachmentDrawScratch, SkeletonData, build_draw_list, build_draw_list_with_atlas,
+    visit_attachment_draws, visit_attachment_draws_with_atlas,
+};
 
 fn assert_approx(actual: f32, expected: f32) {
     let diff = (actual - expected).abs();
@@ -89,6 +92,122 @@ fn build_draw_list_batches_draws_by_texture_path() {
     assert_eq!(draw_list.indices.len(), 12);
     assert_eq!(draw_list.draws[0].first_index, 0);
     assert_eq!(draw_list.draws[0].index_count, 12);
+}
+
+#[test]
+fn visit_attachment_draws_preserves_slot_and_attachment_boundaries() {
+    let data = SkeletonData::from_json_str(
+        r#"
+{
+  "skeleton": { "spine": "4.3.00" },
+  "bones": [ { "name": "root" } ],
+  "slots": [
+    { "name": "slot0", "bone": "root", "attachment": "a" },
+    { "name": "slot1", "bone": "root", "attachment": "b" }
+  ],
+  "skins": {
+    "default": {
+      "slot0": { "a": { "type": "region", "path": "page.png", "width": 2, "height": 2 } },
+      "slot1": { "b": { "type": "region", "path": "page.png", "width": 2, "height": 2 } }
+    }
+  },
+  "animations": {}
+}
+"#,
+    )
+    .unwrap();
+    let mut skeleton = crate::Skeleton::new(data);
+    skeleton.setup_pose();
+    skeleton.update_world_transform_with_physics(crate::Physics::None);
+
+    let mut scratch = AttachmentDrawScratch::default();
+    let mut seen = Vec::new();
+    visit_attachment_draws(&skeleton, &mut scratch, |draw| {
+        seen.push((
+            draw.slot_index,
+            draw.attachment_name.to_string(),
+            draw.attachment_path.to_string(),
+            draw.texture_path.to_string(),
+            draw.vertices.len(),
+            draw.indices.len(),
+        ));
+    });
+
+    assert_eq!(
+        seen,
+        vec![
+            (
+                0,
+                "a".to_string(),
+                "page.png".to_string(),
+                "page.png".to_string(),
+                4,
+                6,
+            ),
+            (
+                1,
+                "b".to_string(),
+                "page.png".to_string(),
+                "page.png".to_string(),
+                4,
+                6,
+            ),
+        ]
+    );
+}
+
+#[test]
+fn visit_attachment_draws_with_atlas_reports_page_texture_and_region_path() {
+    let data = SkeletonData::from_json_str(
+        r#"
+{
+  "skeleton": { "spine": "4.3.00" },
+  "bones": [ { "name": "root" } ],
+  "slots": [ { "name": "slot0", "bone": "root", "attachment": "head" } ],
+  "skins": {
+    "default": {
+      "slot0": {
+        "head": { "type": "region", "path": "head", "width": 2, "height": 2 }
+      }
+    }
+  },
+  "animations": {}
+}
+"#,
+    )
+    .unwrap();
+    let mut skeleton = crate::Skeleton::new(data);
+    skeleton.setup_pose();
+    skeleton.update_world_transform_with_physics(crate::Physics::None);
+    let atlas = r#"
+page.png
+size: 64,64
+head
+  rotate: false
+  xy: 16, 32
+  size: 16, 16
+"#
+    .parse::<Atlas>()
+    .unwrap();
+
+    let mut scratch = AttachmentDrawScratch::default();
+    let mut seen = Vec::new();
+    visit_attachment_draws_with_atlas(&skeleton, &atlas, &mut scratch, |draw| {
+        seen.push((
+            draw.attachment_name.to_string(),
+            draw.attachment_path.to_string(),
+            draw.texture_path.to_string(),
+        ));
+    });
+
+    assert_eq!(
+        seen,
+        vec![(
+            "head".to_string(),
+            "head".to_string(),
+            "page.png".to_string(),
+        )]
+    );
 }
 
 #[test]
