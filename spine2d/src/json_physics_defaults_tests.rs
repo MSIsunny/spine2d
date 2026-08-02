@@ -1,4 +1,7 @@
-use crate::SkeletonData;
+use crate::{
+    AnimationState, AnimationStateData, PhysicsConstraintTimeline, Skeleton, SkeletonData,
+    TimelineRef,
+};
 
 #[test]
 fn json_physics_constraint_defaults_match_spine_cpp() {
@@ -28,6 +31,56 @@ fn json_physics_constraint_defaults_match_spine_cpp() {
     assert_eq!(c.mix, 1.0);
     assert_eq!(c.limit, 5000.0);
     assert!((c.step - (1.0 / 60.0)).abs() <= 1.0e-6);
+}
+
+#[test]
+fn json_physics_mix_timeline_uses_one_for_an_omitted_value() {
+    let json = r#"
+{
+  "skeleton": { "spine": "4.3.00" },
+  "bones": [{ "name": "root" }],
+  "slots": [],
+  "constraints": [
+    { "name": "physics", "type": "physics", "bone": "root", "mix": 1 }
+  ],
+  "animations": {
+    "test": {
+      "physics": {
+        "physics": {
+          "mix": [
+            { "value": 0 },
+            { "time": 1 }
+          ]
+        }
+      }
+    }
+  }
+}
+"#;
+
+    let data = SkeletonData::from_json_str(json).expect("parse skeleton json");
+    let animation = data.find_animation("test").expect("test animation");
+    let timeline = animation
+        .get_timelines()
+        .find_map(|timeline| match timeline {
+            TimelineRef::PhysicsConstraint {
+                timeline: PhysicsConstraintTimeline::Mix(timeline),
+                ..
+            } => Some(timeline),
+            _ => None,
+        })
+        .expect("physics mix timeline");
+    assert_eq!(timeline.frames[0].value, 0.0);
+    assert_eq!(timeline.frames[1].value, 1.0);
+
+    let mut skeleton = Skeleton::new(data.clone());
+    let mut state = AnimationState::new(AnimationStateData::new(data));
+    state.set_animation(0, "test", false);
+    state.update(0.5);
+    state.apply(&mut skeleton);
+
+    let mix = skeleton.get_physics_constraints()[0].get_mix();
+    assert!((mix - 0.5).abs() <= 1.0e-6, "expected mix 0.5, got {mix}");
 }
 
 #[test]

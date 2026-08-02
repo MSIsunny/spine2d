@@ -3256,10 +3256,11 @@ impl SkeletonData {
                     let curve_context = format!(
                         "animation '{name}'.physics.{constraint_name}.{timeline_name} curve"
                     );
+                    let default_value = if timeline_name == "mix" { 1.0 } else { 0.0 };
                     let mut frames = Vec::with_capacity(keys.len());
                     for k in keys {
                         let time = k.time.unwrap_or(0.0);
-                        let value = k.value.unwrap_or(0.0);
+                        let value = k.value.unwrap_or(default_value);
                         frames.push(crate::FloatFrame {
                             time,
                             value,
